@@ -110,6 +110,23 @@ impl BranchDiff {
         &self.diff_base
     }
 
+    pub fn set_base_ref(&mut self, base_ref: SharedString, cx: &mut Context<Self>) {
+        let DiffBase::Merge { base_ref: current } = &self.diff_base else {
+            return;
+        };
+
+        if current == &base_ref {
+            return;
+        }
+
+        self.diff_base = DiffBase::Merge { base_ref };
+        self.tree_diff = None;
+        self.base_commit = None;
+        self.head_commit = None;
+        cx.emit(BranchDiffEvent::FileListChanged);
+        *self.update_needed.borrow_mut() = ();
+    }
+
     pub fn set_repo(&mut self, repo: Option<Entity<Repository>>, cx: &mut Context<Self>) {
         self.repo = repo;
         self.tree_diff = None;

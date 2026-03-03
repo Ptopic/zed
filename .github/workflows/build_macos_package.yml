@@ -1,0 +1,46 @@
+name: build_macos_package
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target triple"
+        required: true
+        default: "aarch64-apple-darwin"
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build macOS bundle
+        run: ./script/bundle-mac ${{ inputs.target }}
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-${{ inputs.target }}.dmg
+          path: target/${{ inputs.target }}/release/Zed-*.dmg
+          if-no-files-found: error
+
+      - name: Upload macOS remote server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-remote-server-macos-${{ inputs.target }}.gz
+          path: target/zed-remote-server-macos-*.gz
+          if-no-files-found: warn

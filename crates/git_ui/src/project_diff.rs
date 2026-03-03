@@ -24,7 +24,7 @@ use git::{
 };
 use gpui::{
     Action, AnyElement, App, AppContext as _, AsyncWindowContext, Entity, EventEmitter,
-    FocusHandle, Focusable, Render, Subscription, Task, WeakEntity, actions,
+    FocusHandle, Focusable, Render, SharedString, Subscription, Task, WeakEntity, actions,
 };
 use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt};
 use multi_buffer::{MultiBuffer, PathKey};
@@ -40,7 +40,10 @@ use smol::future::yield_now;
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 use theme::ActiveTheme;
-use ui::{DiffStat, Divider, KeyBinding, Tooltip, prelude::*, vertical_divider};
+use ui::{
+    DiffStat, Divider, DropdownMenu, DropdownStyle, KeyBinding, Tooltip, prelude::*,
+    vertical_divider,
+};
 use util::{ResultExt as _, rel_path::RelPath};
 use workspace::{
     CloseActiveItem, ItemNavHistory, SerializableItem, ToolbarItemEvent, ToolbarItemLocation,
@@ -78,6 +81,7 @@ pub struct ProjectDiff {
     focus_handle: FocusHandle,
     pending_scroll: Option<PathKey>,
     review_comment_count: usize,
+    branch_options: Vec<SharedString>,
     _task: Task<Result<()>>,
     _subscription: Subscription,
 }
@@ -295,6 +299,47 @@ impl ProjectDiff {
         })
     }
 
+    fn set_branch_diff_base_ref(&mut self, base_ref: SharedString, cx: &mut Context<Self>) {
+        self.branch_diff
+            .update(cx, |branch_diff, cx| branch_diff.set_base_ref(base_ref, cx));
+        cx.notify();
+    }
+
+    fn refresh_branch_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.diff_base(cx), DiffBase::Merge { .. }) {
+            return;
+        }
+
+        let Some(repo) = self.branch_diff.read(cx).repo().cloned() else {
+            return;
+        };
+
+        let this = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let branch_receiver = repo.update(cx, |repo, _| repo.branches());
+                let branch_names = match branch_receiver.await {
+                    Ok(Ok(branches)) => {
+                        let mut branch_names: Vec<SharedString> =
+                            branches.into_iter().map(|branch| branch.name().into()).collect();
+                        branch_names.sort();
+                        branch_names.dedup();
+                        branch_names
+                    }
+                    _ => Vec::new(),
+                };
+
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |this, cx| {
+                        this.branch_options = branch_names;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+    }
+
     fn new_with_default_branch(
         project: Entity<Project>,
         workspace: Entity<Workspace>,
@@ -438,7 +483,7 @@ impl ProjectDiff {
             async |cx| Self::refresh(this, RefreshReason::StatusesChanged, cx).await
         });
 
-        Self {
+        let mut this = Self {
             project,
             workspace: workspace.downgrade(),
             branch_diff,
@@ -448,12 +493,16 @@ impl ProjectDiff {
             buffer_diff_subscriptions: Default::default(),
             pending_scroll: None,
             review_comment_count: 0,
+            branch_options: Vec::new(),
             _task: task,
             _subscription: Subscription::join(
                 branch_diff_subscription,
                 Subscription::join(editor_subscription, review_comment_subscription),
             ),
-        }
+        };
+
+        this.refresh_branch_options(window, cx);
+        this
     }
 
     pub fn diff_base<'a>(&'a self, cx: &'a App) -> &'a DiffBase {
@@ -1653,7 +1702,7 @@ impl ToolbarItemView for BranchDiffToolbar {
 }
 
 impl Render for BranchDiffToolbar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(project_diff) = self.project_diff(cx) else {
             return div();
         };
@@ -1663,8 +1712,39 @@ impl Render for BranchDiffToolbar {
 
         let is_multibuffer_empty = project_diff.read(cx).multibuffer.read(cx).is_empty();
         let is_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
-
         let show_review_button = !is_multibuffer_empty && is_ai_enabled;
+
+        let selected_base = match project_diff.read(cx).diff_base(cx) {
+            DiffBase::Merge { base_ref } => base_ref.clone(),
+            DiffBase::Head => "HEAD".into(),
+        };
+
+        let branch_options = project_diff.read(cx).branch_options.clone();
+        let branch_options_for_menu = branch_options.clone();
+        let project_diff_weak = project_diff.downgrade();
+        let selected_base_for_menu = selected_base.clone();
+
+        let branch_menu = ContextMenu::build(window, cx, move |menu, _, _| {
+            branch_options_for_menu
+                .iter()
+                .fold(menu, |menu, branch_name| {
+                    let branch_name = branch_name.clone();
+                    let project_diff_weak = project_diff_weak.clone();
+                    let label: SharedString = if branch_name == selected_base_for_menu {
+                        format!("✓ {}", branch_name).into()
+                    } else {
+                        branch_name.clone()
+                    };
+
+                    menu.entry(label, None, move |_, cx| {
+                        project_diff_weak
+                            .update(cx, |project_diff, cx| {
+                                project_diff.set_branch_diff_base_ref(branch_name.clone(), cx);
+                            })
+                            .ok();
+                    })
+                })
+        });
 
         h_group_xl()
             .my_neg_1()
@@ -1673,6 +1753,16 @@ impl Render for BranchDiffToolbar {
             .flex_wrap()
             .justify_end()
             .gap_2()
+            .child(
+                DropdownMenu::new(
+                    "branch-diff-base-selector",
+                    format!("Base: {}", selected_base),
+                    branch_menu,
+                )
+                .trigger_size(ButtonSize::Compact)
+                .style(DropdownStyle::Ghost)
+                .disabled(branch_options.is_empty()),
+            )
             .when(!is_multibuffer_empty, |this| {
                 this.child(DiffStat::new(
                     "branch-diff-stat",
