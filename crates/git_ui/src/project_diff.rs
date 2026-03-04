@@ -41,8 +41,8 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 use theme::ActiveTheme;
 use ui::{
-    DiffStat, Divider, DropdownMenu, DropdownStyle, KeyBinding, Tooltip, prelude::*,
-    vertical_divider,
+    ContextMenu, DiffStat, Divider, DropdownMenu, DropdownStyle, KeyBinding, Tooltip,
+    prelude::*, vertical_divider,
 };
 use util::{ResultExt as _, rel_path::RelPath};
 use workspace::{
@@ -330,11 +330,10 @@ impl ProjectDiff {
                 };
 
                 if let Some(this) = this.upgrade() {
-                    this.update(cx, |this, cx| {
+                    let _ = this.update(cx, |this, cx| {
                         this.branch_options = branch_names;
                         cx.notify();
-                    })
-                    .ok();
+                    });
                 }
             })
             .detach();
@@ -1724,26 +1723,24 @@ impl Render for BranchDiffToolbar {
         let project_diff_weak = project_diff.downgrade();
         let selected_base_for_menu = selected_base.clone();
 
-        let branch_menu = ContextMenu::build(window, cx, move |menu, _, _| {
-            branch_options_for_menu
-                .iter()
-                .fold(menu, |menu, branch_name| {
-                    let branch_name = branch_name.clone();
-                    let project_diff_weak = project_diff_weak.clone();
-                    let label: SharedString = if branch_name == selected_base_for_menu {
-                        format!("✓ {}", branch_name).into()
-                    } else {
-                        branch_name.clone()
-                    };
+        let branch_menu = ContextMenu::build(window, cx, move |context_menu, _, _| {
+            let mut context_menu = context_menu;
+            for branch_name in &branch_options_for_menu {
+                let branch_name = branch_name.clone();
+                let project_diff_weak = project_diff_weak.clone();
+                let label: SharedString = if branch_name == selected_base_for_menu {
+                    format!("✓ {}", branch_name).into()
+                } else {
+                    branch_name.clone()
+                };
 
-                    menu.entry(label, None, move |_, cx| {
-                        project_diff_weak
-                            .update(cx, |project_diff, cx| {
-                                project_diff.set_branch_diff_base_ref(branch_name.clone(), cx);
-                            })
-                            .ok();
-                    })
-                })
+                context_menu = context_menu.entry(label, None, move |_, cx| {
+                    let _ = project_diff_weak.update(cx, |project_diff, cx| {
+                        project_diff.set_branch_diff_base_ref(branch_name.clone(), cx);
+                    });
+                });
+            }
+            context_menu
         });
 
         h_group_xl()
