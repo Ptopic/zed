@@ -320,8 +320,10 @@ impl ProjectDiff {
                 let branch_receiver = repo.update(cx, |repo, _| repo.branches());
                 let branch_names = match branch_receiver.await {
                     Ok(Ok(branches)) => {
-                        let mut branch_names: Vec<SharedString> =
-                            branches.into_iter().map(|branch| branch.name().into()).collect();
+                        let mut branch_names: Vec<SharedString> = branches
+                            .into_iter()
+                            .map(|branch| branch.name().to_string().into())
+                            .collect();
                         branch_names.sort();
                         branch_names.dedup();
                         branch_names
